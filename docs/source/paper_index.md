@@ -1265,6 +1265,54 @@ training_args = DPOConfig(
 )
 ```
 
+### Unbiased Alignment for Large Language Models with Noisy Preferences
+
+**📜 Paper**: https://huggingface.co/papers/2607.03248
+
+This ICML 2026 paper models preference noise as labels flipped with probability  \\( \varepsilon \\) and inverts this transition, so that the policy (or reward model) trained on noisy preferences has the same optimum as with clean preferences. For DPO, this gives the Unbiased DPO (UDPO) loss:
+
+$$
+\mathcal{L}_{\text{UDPO}} = -\log \frac{e^{z} + a}{e^{z} + 1}, \quad z = \beta \left( \log \frac{\pi_\theta(y_w|x)}{\pi_{\text{ref}}(y_w|x)} - \log \frac{\pi_\theta(y_l|x)}{\pi_{\text{ref}}(y_l|x)} \right), \quad a = \frac{\varepsilon}{1 - \varepsilon},
+$$
+
+which is the DPO loss for  \\( a = 0 \\). Unlike [Robust DPO](#provably-robust-dpo-aligning-language-models-with-noisy-feedback), the paper shows that the optimum stays unbiased when the true flip probability is lower than the assumed  \\( \varepsilon \\) (Corollary 4.7), so  \\( \varepsilon \\) does not have to be estimated exactly. The normalized variant α-UDPO multiplies the loss by  \\( \alpha = \frac{1 + \sqrt{a}}{1 - \sqrt{a}} \\), so that its maximum gradient magnitude is 1 as for DPO. In TRL,  \\( \varepsilon \\) is set with `label_smoothing` and  \\( \alpha \\) with `loss_weights`. To use α-UDPO with  \\( a = 0.8 \\), the value the paper recommends to practitioners:
+
+```python
+from trl import DPOConfig
+
+a = 0.8  # value recommended to practitioners in Appendix B.1 of the paper
+training_args = DPOConfig(
+    loss_type="udpo",
+    label_smoothing=a / (1 + a),  # flip probability ε, so that a = ε / (1 - ε)
+    loss_weights=[(1 + a**0.5) / (1 - a**0.5)],  # α of α-UDPO (Section 4.3 of the paper), omit it for UDPO
+    beta=0.1,  # 0.1 for HH and UltraFeedback, 0.5 for TL;DR (Appendix B.1 of the paper)
+    learning_rate=5e-6,  # 5e-6 for Llama-3.2-3B and Qwen3-1.7B, 1e-6 for 8B models (Appendix B.1 of the paper)
+    num_train_epochs=3,  # Appendix B.1 of the paper
+    per_device_train_batch_size=16,  # total batch size of 128 on 8 GPUs (Appendix B.1 of the paper)
+    max_grad_norm=10.0,  # Appendix B.1 of the paper
+    warmup_ratio=0.1,  # Appendix B.1 of the paper
+)
+```
+
+Applying the same correction to the Bradley-Terry loss gives the Unbiased Reward Model (URM) loss  \\( -\log \frac{e^{\Delta} + a}{e^{\Delta} + 1} \\), where  \\( \Delta = r(x, y_w) - r(x, y_l) \\), available in the [`RewardTrainer`]:
+
+```python
+from trl import RewardConfig
+
+a = 0.8
+training_args = RewardConfig(
+    loss_type="urm",
+    label_smoothing=a / (1 + a),  # flip probability ε, so that a = ε / (1 - ε)
+    learning_rate=1e-5,  # Appendix B.1 of the paper
+    num_train_epochs=3,  # Appendix B.1 of the paper
+    per_device_train_batch_size=16,  # total batch size of 128 on 8 GPUs (Appendix B.1 of the paper)
+    max_grad_norm=10.0,  # Appendix B.1 of the paper
+    warmup_ratio=0.1,  # Appendix B.1 of the paper
+)
+```
+
+[`RewardConfig`] has no `loss_weights`. Since AdamW updates do not change when the loss is multiplied by a constant (up to numerical stabilizers such as `adam_epsilon`), the paper's α-URM corresponds to URM with `max_grad_norm` divided by  \\( \alpha \\).
+
 ## Kahneman–Tversky Optimization
 
 Papers relating to the [`KTOTrainer`]
